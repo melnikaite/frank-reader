@@ -1,0 +1,36 @@
+[project]
+name = "frank-reader"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pydantic",
+    "pydantic-settings",
+    "pymupdf",
+    "python-docx",
+    "trafilatura",
+    "sse-starlette",
+    "python-multipart",
+    "charset-normalizer",
+    "pillow",
+    "xhtml2pdf>=0.2.17",
+]
+
+[project.scripts]
+frank-reader = "frank_reader.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "anyio"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/frank_reader"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]

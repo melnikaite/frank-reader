@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Frank Reader</title>
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; color: #222; background: #fff; }
+  h1 { font-size: 1.4rem; }
+  .tabs { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .tab-btn { padding: 0.4rem 0.9rem; border: 1px solid #ccc; background: #f5f5f5; border-radius: 4px; cursor: pointer; }
+  .tab-btn.active { background: #333; color: #fff; border-color: #333; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  #dropzone { border: 2px dashed #aaa; border-radius: 6px; padding: 2rem; text-align: center; color: #666; cursor: pointer; }
+  #dropzone.drag { border-color: #333; background: #fafafa; }
+  textarea, input[type=url], input[type=text] { box-sizing: border-box; padding: 0.5rem; font: inherit; }
+  textarea, input[type=url] { width: 100%; }
+  textarea { min-height: 8rem; }
+  .row { display: flex; gap: 1rem; align-items: center; margin: 0.75rem 0; flex-wrap: wrap; }
+  button.primary { padding: 0.5rem 1.2rem; background: #222; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+  #progress { margin-top: 1.5rem; }
+  #page-list { list-style: none; padding: 0; font-size: 0.9rem; }
+  #page-list li { padding: 0.15rem 0; }
+  .status-done::before { content: "✓ "; color: #2a7; }
+  .status-failed::before { content: "✗ "; color: #c33; }
+  #result-links a { margin-right: 1rem; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #eee; }
+  section { margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+
+<h1>Frank Reader</h1>
+<p>Upload a document — get an interlinear reading text in Ilya Frank's method.
+The source language is detected automatically; pick the translation language below.</p>
+
+<div class="tabs">
+  <button type="button" class="tab-btn active" data-tab="file">File</button>
+  <button type="button" class="tab-btn" data-tab="url">URL</button>
+  <button type="button" class="tab-btn" data-tab="text">Text</button>
+</div>
+
+<form id="job-form">
+  <div class="tab-panel active" data-panel="file">
+    <div id="dropzone">Drop a file here or click to choose (PDF, DOCX, PNG, JPG, WEBP)</div>
+    <input type="file" id="file-input" name="file" style="display:none">
+    <p id="file-name" style="color:#666"></p>
+  </div>
+  <div class="tab-panel" data-panel="url">
+    <input type="url" id="url-input" name="url" placeholder="https://example.com/article">
+  </div>
+  <div class="tab-panel" data-panel="text">
+    <textarea id="text-input" name="text" placeholder="Paste text..."></textarea>
+  </div>
+
+  <div class="row">
+    <label>Target language code:
+      <input type="text" id="target-lang" value="ru" size="4" placeholder="ru">
+    </label>
+    <label><input type="checkbox" id="force-vision"> Force vision path</label>
+  </div>
+  <button type="submit" class="primary" id="submit-btn">Process</button>
+</form>
+
+<section id="progress" style="display:none">
+  <h2>Progress</h2>
+  <p id="progress-summary">Pages processed: 0</p>
+  <ul id="page-list"></ul>
+  <div id="result-links" style="display:none">
+    <p><strong>Done.</strong></p>
+    <a id="link-html" target="_blank">Open HTML</a>
+    <a id="link-json" target="_blank">result.json</a>
+    <a id="link-pdf" target="_blank">Download PDF</a>
+  </div>
+</section>
+
+<section>
+  <h2>Job history</h2>
+  <table id="history-table">
+    <thead><tr><th>Source</th><th>Status</th><th>Pages</th><th>Links</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+let activeTab = "file";
+let selectedFile = null;
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.dataset.panel === activeTab));
+  });
+});
+
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("file-input");
+dropzone.addEventListener("click", () => fileInput.click());
+["dragenter", "dragover"].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add("drag"); })
+);
+["dragleave", "drop"].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove("drag"); })
+);
+dropzone.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length) setSelectedFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length) setSelectedFile(fileInput.files[0]);
+});
+function setSelectedFile(f) {
+  selectedFile = f;
+  document.getElementById("file-name").textContent = f.name;
+}
+
+document.getElementById("job-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const submitBtn = document.getElementById("submit-btn");
+  const formData = new FormData();
+  if (activeTab === "file") {
+    if (!selectedFile) { alert("Choose a file"); return; }
+    formData.append("file", selectedFile);
+  } else if (activeTab === "url") {
+    const url = document.getElementById("url-input").value.trim();
+    if (!url) { alert("Enter a URL"); return; }
+    formData.append("url", url);
+  } else {
+    const text = document.getElementById("text-input").value.trim();
+    if (!text) { alert("Paste some text"); return; }
+    formData.append("text", text);
+  }
+  formData.append("target_lang", document.getElementById("target-lang").value || "ru");
+  formData.append("force_vision", document.getElementById("force-vision").checked ? "true" : "false");
+
+  submitBtn.disabled = true;
+  try {
+    const resp = await fetch("/jobs", { method: "POST", body: formData });
+    if (!resp.ok) { alert("Error: " + (await resp.text())); return; }
+    const { job_id } = await resp.json();
+    trackJob(job_id);
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+function trackJob(jobId) {
+  document.getElementById("progress").style.display = "block";
+  document.getElementById("result-links").style.display = "none";
+  const pageList = document.getElementById("page-list");
+  pageList.innerHTML = "";
+  const summary = document.getElementById("progress-summary");
+  let done = 0, failed = 0;
+
+  const source = new EventSource(`/jobs/${jobId}/events`);
+  source.addEventListener("page", (ev) => {
+    const data = JSON.parse(ev.data);
+    const li = document.createElement("li");
+    li.className = "status-" + data.status;
+    li.textContent = `Page ${data.page_number}: ${data.status}`;
+    pageList.appendChild(li);
+    if (data.status === "done") done++; else if (data.status === "failed") failed++;
+    summary.textContent = `Pages processed: ${done}, failed: ${failed}`;
+  });
+  source.addEventListener("job", (ev) => {
+    const data = JSON.parse(ev.data);
+    summary.textContent += ` — job ${data.status}`;
+    source.close();
+    if (data.status === "done" || data.status === "failed") {
+      document.getElementById("link-html").href = `/jobs/${jobId}/result.html`;
+      document.getElementById("link-json").href = `/jobs/${jobId}/result.json`;
+      document.getElementById("link-pdf").href = `/jobs/${jobId}/result.pdf`;
+      document.getElementById("result-links").style.display = "block";
+    }
+    loadHistory();
+  });
+  source.onerror = () => source.close();
+}
+
+async function loadHistory() {
+  const resp = await fetch("/jobs");
+  const jobs = await resp.json();
+  const tbody = document.querySelector("#history-table tbody");
+  tbody.innerHTML = "";
+  for (const job of jobs) {
+    const tr = document.createElement("tr");
+    const pagesStr = job.total_pages != null ? `${job.done_pages}/${job.total_pages}` : "-";
+    const links = [`<a href="/jobs/${job.id}/result.html" target="_blank">HTML</a>`];
+    if (job.status === "interrupted" || job.status === "failed") {
+      links.push(`<a href="#" data-resume="${job.id}">Resume</a>`);
+    }
+    tr.innerHTML = `<td>${job.source_name}</td><td>${job.status}</td><td>${pagesStr}</td><td>${links.join(" ")}</td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-resume]").forEach(a => {
+    a.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const jobId = a.dataset.resume;
+      await fetch(`/jobs/${jobId}/resume`, { method: "POST" });
+      trackJob(jobId);
+    });
+  });
+}
+
+loadHistory();
+</script>
+
+</body>
+</html>
