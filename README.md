@@ -1,5 +1,9 @@
 # Frank Reader
 
+[![CI](https://github.com/melnikaite/frank-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/melnikaite/frank-reader/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
+
 A local, single-user web tool that turns documents (PDF / DOCX / images /
 URLs / plain text) into interlinear reading text following [Ilya Frank's
 reading method](https://en.wikipedia.org/wiki/Ilya_Frank%27s_Reading_Method):
