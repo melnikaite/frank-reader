@@ -18,9 +18,16 @@ T = TypeVar("T", bound=BaseModel)
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
 
+ProgressCallback = Callable[[int], None]
+
+
 class LLMClient(Protocol):
     async def complete(
-        self, system: str, user_text: str, image_png: bytes | None = None
+        self,
+        system: str,
+        user_text: str,
+        image_png: bytes | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> str: ...
 
 
@@ -99,8 +106,9 @@ async def call_structured(
     user_text: str,
     schema: type[T],
     image_png: bytes | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> T:
-    raw = await client.complete(system, user_text, image_png)
+    raw = await client.complete(system, user_text, image_png, on_progress=on_progress)
     try:
         return _parse(raw, schema)
     except (ValidationError, ValueError, json.JSONDecodeError) as err:
@@ -112,7 +120,7 @@ async def call_structured(
             + str(err)[:500]
             + "\n\nReturn STRICTLY valid JSON per the schema, no explanations, no markdown."
         )
-        raw2 = await client.complete(system, repair_user, image_png)
+        raw2 = await client.complete(system, repair_user, image_png, on_progress=on_progress)
         return _parse(raw2, schema)
 
 
@@ -130,16 +138,65 @@ class FakeLLM:
         self.calls: list[dict[str, Any]] = []
 
     async def complete(
-        self, system: str, user_text: str, image_png: bytes | None = None
+        self,
+        system: str,
+        user_text: str,
+        image_png: bytes | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> str:
         self.calls.append(
             {"system": system, "user_text": user_text, "has_image": image_png is not None}
         )
+        if on_progress is not None:
+            for tokens in (50, 100):
+                on_progress(tokens)
         if self._callable is not None:
             return self._callable(system, user_text, image_png is not None)
         if self._responses:
             return self._responses.pop(0)
         raise RuntimeError("FakeLLM exhausted: no more canned responses")
+
+
+class StreamAccumulator:
+    """Accumulates OpenAI-style SSE stream lines into a message dict."""
+
+    def __init__(self) -> None:
+        self._content: list[str] = []
+        self._reasoning: list[str] = []
+        self.chunks = 0
+
+    def feed(self, line: str) -> bool:
+        """Feed one raw SSE line; returns True if it carried new text."""
+        line = line.strip()
+        if not line.startswith("data:"):
+            return False
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            return False
+        try:
+            obj = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+        choices = obj.get("choices") or []
+        if not choices:
+            return False
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        reasoning = delta.get("reasoning_content")
+        if content:
+            self._content.append(content)
+        if reasoning:
+            self._reasoning.append(reasoning)
+        if content or reasoning:
+            self.chunks += 1
+            return True
+        return False
+
+    def message(self) -> dict[str, str]:
+        return {
+            "content": "".join(self._content),
+            "reasoning_content": "".join(self._reasoning),
+        }
 
 
 class LocalAIClient:
@@ -153,40 +210,48 @@ class LocalAIClient:
             await self._http.aclose()
 
     async def complete(
-        self, system: str, user_text: str, image_png: bytes | None = None
+        self,
+        system: str,
+        user_text: str,
+        image_png: bytes | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> str:
         s = self._settings
         has_image = image_png is not None
         base_url = (s.llm_vision_base_url if has_image and s.llm_vision_base_url else s.llm_base_url)
         model = s.llm_vision_model if has_image and s.llm_vision_model else s.llm_model
-        timeout = s.llm_timeout_vision if has_image else s.llm_timeout_text
+        # Streaming: the read timeout limits silence between chunks, not the
+        # total generation time — a slow but alive generation never times out.
+        idle = s.llm_timeout_vision if has_image else s.llm_timeout_text
+        timeout = httpx.Timeout(idle, connect=15.0)
 
         body = build_request_body(
             system, user_text, image_png, model, s.llm_temperature, s.llm_max_tokens, s.llm_reasoning_effort
         )
+        body["stream"] = True
         headers = {"Authorization": f"Bearer {s.llm_api_key}"}
 
         last_exc: Exception | None = None
         for attempt in range(3):
             start = time.monotonic()
             try:
-                resp = await self._http.post(
-                    f"{base_url}/chat/completions", json=body, headers=headers, timeout=timeout
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                acc = StreamAccumulator()
+                async with self._http.stream(
+                    "POST", f"{base_url}/chat/completions", json=body, headers=headers, timeout=timeout
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if acc.feed(line) and on_progress is not None:
+                            on_progress(acc.chunks)
                 elapsed = time.monotonic() - start
-                usage = data.get("usage", {})
                 logger.info(
-                    "llm complete model=%s image=%s elapsed=%.1fs prompt_tokens=%s completion_tokens=%s",
+                    "llm complete model=%s image=%s elapsed=%.1fs stream_chunks=%d",
                     model,
                     has_image,
                     elapsed,
-                    usage.get("prompt_tokens"),
-                    usage.get("completion_tokens"),
+                    acc.chunks,
                 )
-                message = data["choices"][0]["message"]
-                return extract_text(message)
+                return extract_text(acc.message())
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
                 if attempt < 2:

@@ -144,7 +144,11 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
         if job is None:
             raise HTTPException(404, "Job not found")
         if job["status"] not in ("interrupted", "failed"):
-            raise HTTPException(409, "Job is not in a resumable state")
+            # A "done" job can still carry failed pages worth retrying.
+            pages = app.state.storage.get_pages(job_id)
+            has_failed = any(p["status"] == "failed" for p in pages)
+            if job["status"] != "done" or not has_failed:
+                raise HTTPException(409, "Job is not in a resumable state")
         await app.state.queue.put(job_id)
         return JSONResponse({"status": "queued"}, status_code=202)
 
@@ -170,7 +174,7 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
                 while True:
                     event = await q.get()
                     yield {"event": event["event"], "data": json.dumps(event)}
-                    if event["event"] == "job":
+                    if event["event"] == "job" and event.get("status") in ("done", "failed"):
                         break
             finally:
                 app.state.events.unsubscribe(job_id, q)

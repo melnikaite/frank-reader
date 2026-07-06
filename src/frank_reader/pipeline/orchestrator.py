@@ -42,6 +42,17 @@ class EventBus:
             q.put_nowait(event)
 
 
+def _exc_str(exc: Exception) -> str:
+    # str() of some exceptions (notably httpx.ReadTimeout) is empty — fall
+    # back to the class name so the UI never shows a blank error.
+    return str(exc) or exc.__class__.__name__
+
+
+# Empirical output-size ratio on gemma-4-e4b: ~1.2-1.5 completion tokens per
+# input character (used only to estimate in-page progress, never to cap it).
+_EXPECTED_TOKENS_PER_CHAR = 1.4
+
+
 def make_cache_key(prompt_version: str, model: str, target_lang: str, kind: str, payload: bytes | str) -> str:
     h = hashlib.sha256()
     for part in (prompt_version, model, target_lang, kind):
@@ -93,12 +104,13 @@ async def process_job(job_id: str, storage: Storage, settings: Settings, llm: LL
         pages: list[PageContent] = adapter.load(source_arg)
     except Exception as exc:
         logger.exception("Failed to load source for job %s", job_id)
-        storage.set_job_status(job_id, "failed", error=str(exc))
+        storage.set_job_status(job_id, "failed", error=_exc_str(exc))
         events.emit(job_id, {"event": "job", "status": "failed"})
         return
 
     total_pages = len(pages)
     storage.set_job_status(job_id, "running", total_pages=total_pages)
+    events.emit(job_id, {"event": "job", "status": "running", "total_pages": total_pages})
 
     existing = {p["page_number"]: p for p in storage.get_pages(job_id)}
     for page in pages:
@@ -110,7 +122,8 @@ async def process_job(job_id: str, storage: Storage, settings: Settings, llm: LL
     page_records: dict[int, dict] = {}
     for pn in sorted(existing):
         row = existing[pn]
-        if row["status"] in ("done", "failed") and row["result_json"]:
+        # Only "done" pages are kept on resume; failed ones get retried.
+        if row["status"] == "done" and row["result_json"]:
             record = json.loads(row["result_json"])
             page_records[pn] = record
             if row["status"] == "done" and record.get("result"):
@@ -141,23 +154,47 @@ async def process_job(job_id: str, storage: Storage, settings: Settings, llm: LL
         payload: bytes | str = page.image_png if page.kind == "image" else (page.text or "")
         cache_key = make_cache_key(PROMPT_VERSION, settings.llm_model, target_lang, cache_kind, payload)
 
+        expected_tokens = (
+            int(len(page.text or "") * _EXPECTED_TOKENS_PER_CHAR) + 200
+            if page.kind == "text"
+            else None
+        )
+        progress_state = {"last": 0}
+
+        def on_progress(tokens: int, pn=pn, expected=expected_tokens, state=progress_state) -> None:
+            if tokens - state["last"] < 25:  # throttle SSE traffic
+                return
+            state["last"] = tokens
+            events.emit(
+                job_id,
+                {
+                    "event": "page_progress",
+                    "page_number": pn,
+                    "tokens": tokens,
+                    "expected_tokens": expected,
+                },
+            )
+
         cached = storage.cache_get(cache_key)
         try:
             if cached is not None:
                 page_result = PageResult.model_validate_json(cached)
             elif page.kind == "text":
                 user_text = user_text_page(page.text or "", context)
-                page_result = await call_structured(llm, system, user_text, PageResult)
+                page_result = await call_structured(llm, system, user_text, PageResult, on_progress=on_progress)
                 storage.cache_put(cache_key, page_result.model_dump_json())
             else:
                 user_text = user_vision_page(context)
-                page_result = await call_structured(llm, system, user_text, PageResult, image_png=page.image_png)
+                page_result = await call_structured(
+                    llm, system, user_text, PageResult, image_png=page.image_png, on_progress=on_progress
+                )
                 storage.cache_put(cache_key, page_result.model_dump_json())
         except Exception as exc:
-            logger.warning("Page %s of job %s failed: %s", pn, job_id, exc)
-            record = {"page_number": pn, "status": "failed", "error": str(exc)}
+            err = _exc_str(exc)
+            logger.warning("Page %s of job %s failed: %s", pn, job_id, err)
+            record = {"page_number": pn, "status": "failed", "error": err}
             page_records[pn] = record
-            storage.upsert_page(job_id, pn, "failed", result_json=json.dumps(record), error=str(exc))
+            storage.upsert_page(job_id, pn, "failed", result_json=json.dumps(record), error=err)
             events.emit(job_id, {"event": "page", "page_number": pn, "status": "failed"})
             continue
 

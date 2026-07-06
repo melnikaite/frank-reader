@@ -76,6 +76,7 @@ Everything is configured via `FRANK_`-prefixed environment variables or a
 | `FRANK_LLM_MODEL` | `gemma-4-e4b-it-qat-q4_0` | model name |
 | `FRANK_LLM_REASONING_EFFORT` | `none` | suppresses Gemma 4 "thinking" (see below) |
 | `FRANK_HOST` / `FRANK_PORT` | `127.0.0.1` / `8200` | where the server listens |
+| `FRANK_LLM_TIMEOUT_TEXT` | `600` | max silence between stream chunks, s (not total time) |
 | `FRANK_DATA_DIR` | `~/.frank-reader` | jobs, SQLite, LLM cache |
 | `FRANK_TARGET_LANG_DEFAULT` | `ru` | default translation language |
 
@@ -121,6 +122,11 @@ All handled in code, but useful to know when changing the model or prompts:
 - LocalAI can return a bare JSON array instead of an object, or wrap the
   answer in markdown fences — both are handled before validation.
 - Exceeding the context window truncates silently, with no error.
+
+Responses are streamed (`stream: true`): the timeout limits silence between
+chunks rather than total generation time, and the UI shows live in-page
+progress (a page on a small model takes minutes — without streaming it looks
+frozen).
 
 ### Token budget and chunk size (matters on small models)
 

@@ -9,8 +9,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:1240/v1"
     llm_model: str = "gemma-4-e4b-it-qat-q4_0"
     llm_api_key: str = "not-needed"
-    llm_timeout_text: float = 180.0
-    llm_timeout_vision: float = 420.0
+    # Responses are streamed, so these act as an idle limit (max silence
+    # between chunks), not a cap on total generation time. Still generous:
+    # a cold model load before the first token can take minutes.
+    llm_timeout_text: float = 600.0
+    llm_timeout_vision: float = 900.0
     llm_temperature: float = 0.2
     # Frank-method output roughly duplicates+translates the source, so JSON
     # completion tokens run ~1.2-1.5x the input character count on this model

@@ -86,3 +86,66 @@ def test_extract_text_falls_back_to_reasoning_content_last_paragraph():
 def test_extract_text_raises_when_both_empty():
     with pytest.raises(ValueError):
         extract_text({"content": "", "reasoning_content": ""})
+
+
+# --- streaming ---------------------------------------------------------------
+
+import json
+
+import httpx
+
+from frank_reader.config import Settings
+from frank_reader.pipeline.llm_client import LocalAIClient, StreamAccumulator
+
+
+def _sse(*chunks: str) -> str:
+    lines = [f"data: {c}" for c in chunks]
+    lines.append("data: [DONE]")
+    return "\n\n".join(lines) + "\n\n"
+
+
+def test_stream_accumulator_collects_content():
+    acc = StreamAccumulator()
+    assert acc.feed('data: {"choices":[{"delta":{"content":"Hel"}}]}') is True
+    assert acc.feed('data: {"choices":[{"delta":{"content":"lo"}}]}') is True
+    assert acc.feed("data: [DONE]") is False
+    assert acc.feed("") is False
+    assert acc.feed("garbage") is False
+    assert acc.chunks == 2
+    assert acc.message()["content"] == "Hello"
+
+
+def test_stream_accumulator_collects_reasoning_content():
+    acc = StreamAccumulator()
+    acc.feed('data: {"choices":[{"delta":{"reasoning_content":"think "}}]}')
+    acc.feed('data: {"choices":[{"delta":{"content":"answer"}}]}')
+    msg = acc.message()
+    assert msg["content"] == "answer"
+    assert msg["reasoning_content"] == "think "
+
+
+def test_stream_accumulator_ignores_empty_delta_and_bad_json():
+    acc = StreamAccumulator()
+    assert acc.feed('data: {"choices":[{"delta":{}}]}') is False
+    assert acc.feed('data: {not json') is False
+    assert acc.feed('data: {"choices":[]}') is False
+    assert acc.chunks == 0
+
+
+async def test_localai_client_streams_and_reports_progress():
+    body = _sse(
+        '{"choices":[{"delta":{"content":"{\\"labels\\":"}}]}',
+        '{"choices":[{"delta":{"content":" []}"}}]}',
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent = json.loads(request.content)
+        assert sent["stream"] is True
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = LocalAIClient(Settings(), http_client=http)
+    progress: list[int] = []
+    raw = await client.complete("sys", "user", on_progress=progress.append)
+    assert raw == '{"labels": []}'
+    assert progress == [1, 2]

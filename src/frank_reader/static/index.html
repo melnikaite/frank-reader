@@ -22,6 +22,9 @@
   button.primary { padding: 0.5rem 1.2rem; background: #222; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
   button.primary:disabled { opacity: 0.5; cursor: default; }
   #progress { margin-top: 1.5rem; }
+  #bar-wrap { height: 0.7rem; background: #eee; border-radius: 4px; overflow: hidden; margin: 0.5rem 0; }
+  #bar { height: 100%; width: 0; background: #2a7; transition: width 0.4s; }
+  #current-page { color: #666; font-size: 0.9rem; min-height: 1.2em; }
   #page-list { list-style: none; padding: 0; font-size: 0.9rem; }
   #page-list li { padding: 0.15rem 0; }
   .status-done::before { content: "✓ "; color: #2a7; }
@@ -69,6 +72,8 @@ The source language is detected automatically; pick the translation language bel
 <section id="progress" style="display:none">
   <h2>Progress</h2>
   <p id="progress-summary">Pages processed: 0</p>
+  <div id="bar-wrap"><div id="bar"></div></div>
+  <p id="current-page"></p>
   <ul id="page-list"></ul>
   <div id="result-links" style="display:none">
     <p><strong>Done.</strong></p>
@@ -154,23 +159,61 @@ function trackJob(jobId) {
   const pageList = document.getElementById("page-list");
   pageList.innerHTML = "";
   const summary = document.getElementById("progress-summary");
-  let done = 0, failed = 0;
+  const bar = document.getElementById("bar");
+  const currentPage = document.getElementById("current-page");
+  bar.style.width = "0";
+  currentPage.textContent = "";
+  const pageStatus = {};   // page_number -> "pending" | "done" | "failed"
+  let currentFraction = 0; // in-page progress of the page being generated
+
+  function counts() {
+    let done = 0, failed = 0, total = 0;
+    for (const s of Object.values(pageStatus)) {
+      total++;
+      if (s === "done") done++; else if (s === "failed") failed++;
+    }
+    return { done, failed, total };
+  }
+  function redraw() {
+    const { done, failed, total } = counts();
+    summary.textContent = `Pages: ${done}/${total || "?"} done` + (failed ? `, ${failed} failed` : "");
+    if (total) bar.style.width = (100 * (done + failed + currentFraction) / total) + "%";
+  }
 
   const source = new EventSource(`/jobs/${jobId}/events`);
   source.addEventListener("page", (ev) => {
     const data = JSON.parse(ev.data);
-    const li = document.createElement("li");
-    li.className = "status-" + data.status;
-    li.textContent = `Page ${data.page_number}: ${data.status}`;
-    pageList.appendChild(li);
-    if (data.status === "done") done++; else if (data.status === "failed") failed++;
-    summary.textContent = `Pages processed: ${done}, failed: ${failed}`;
+    pageStatus[data.page_number] = data.status;
+    if (data.status !== "pending") {
+      currentFraction = 0;
+      currentPage.textContent = "";
+      const li = document.createElement("li");
+      li.className = "status-" + data.status;
+      li.textContent = `Page ${data.page_number}: ${data.status}`;
+      pageList.appendChild(li);
+    }
+    redraw();
+  });
+  source.addEventListener("page_progress", (ev) => {
+    const data = JSON.parse(ev.data);
+    if (!(data.page_number in pageStatus)) pageStatus[data.page_number] = "pending";
+    if (data.expected_tokens) {
+      currentFraction = Math.min(data.tokens / data.expected_tokens, 0.95);
+      currentPage.textContent =
+        `Page ${data.page_number}: generating… ~${Math.round(currentFraction * 100)}% (${data.tokens} tokens)`;
+    } else {
+      currentPage.textContent = `Page ${data.page_number}: generating… ${data.tokens} tokens`;
+    }
+    redraw();
   });
   source.addEventListener("job", (ev) => {
     const data = JSON.parse(ev.data);
+    if (data.status === "running") { redraw(); return; }
     summary.textContent += ` — job ${data.status}`;
+    currentPage.textContent = "";
     source.close();
     if (data.status === "done" || data.status === "failed") {
+      bar.style.width = "100%";
       document.getElementById("link-html").href = `/jobs/${jobId}/result.html`;
       document.getElementById("link-json").href = `/jobs/${jobId}/result.json`;
       document.getElementById("link-pdf").href = `/jobs/${jobId}/result.pdf`;
@@ -190,7 +233,8 @@ async function loadHistory() {
     const tr = document.createElement("tr");
     const pagesStr = job.total_pages != null ? `${job.done_pages}/${job.total_pages}` : "-";
     const links = [`<a href="/jobs/${job.id}/result.html" target="_blank">HTML</a>`];
-    if (job.status === "interrupted" || job.status === "failed") {
+    const partial = job.total_pages != null && job.done_pages < job.total_pages;
+    if (job.status === "interrupted" || job.status === "failed" || (job.status === "done" && partial)) {
       links.push(`<a href="#" data-resume="${job.id}">Resume</a>`);
     }
     tr.innerHTML = `<td>${job.source_name}</td><td>${job.status}</td><td>${pagesStr}</td><td>${links.join(" ")}</td>`;
