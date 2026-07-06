@@ -53,8 +53,17 @@ def test_failed_page_shows_banner():
     }
     html = render_html(doc, job_dir=None)
     assert "page-failed" in html
-    assert "Page 3" in html
+    assert "page 3" in html
     assert "boom" in html
+
+
+def test_no_page_markers_in_output():
+    blocks = [{"order": 1, "type": "phrase", "original": "Hallo",
+               "chunks": [{"original": "Hallo", "translation": "привет"}]}]
+    doc = {"source_name": "t", "pages": [_page_with_blocks(blocks)]}
+    html = render_html(doc, job_dir=None)
+    assert "page-marker" not in html
+    assert "page-sep" not in html
 
 
 def test_toggle_present():

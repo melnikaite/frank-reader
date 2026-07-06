@@ -21,8 +21,6 @@ _STYLE = """
   .phrase .plain { margin: 0; color: #444; }
   h2 { margin-top: 2em; }
   .caption { font-style: italic; color: #555; }
-  .page-sep { border: none; border-top: 1px solid #ddd; margin: 2.5rem 0 0.5rem; }
-  .page-marker { color: #999; font-size: 0.8rem; text-align: center; margin-bottom: 1.5rem; }
   .page-failed { background: #fee; border: 1px solid #c33; color: #900; padding: 0.75rem 1rem;
                  margin: 1rem 0; border-radius: 4px; }
   .inline-image { max-width: 100%; display: block; margin: 1rem 0 0.4rem; }
@@ -144,11 +142,15 @@ def _render_inline_image_html(img_file: str, job_dir: Path, labels: list[dict[st
 
 
 def _render_page(page: dict[str, Any], job_dir: Path) -> str:
-    parts = [f'<hr class="page-sep"><div class="page-marker">Page {page["page_number"]}</div>']
+    # Pages are internal processing units (progress/retry granularity), not a
+    # feature of the reading text — the output flows continuously. Only a
+    # failed fragment surfaces its page number, so it can be matched with the
+    # job UI and retried.
+    parts: list[str] = []
     if page.get("status") == "failed":
         parts.append(
-            f'<div class="page-failed">Page {page["page_number"]} was not processed: '
-            f'{_esc(page.get("error"))}</div>'
+            f'<div class="page-failed">A fragment was not processed '
+            f'(page {page["page_number"]}): {_esc(page.get("error"))}</div>'
         )
         return "".join(parts)
 

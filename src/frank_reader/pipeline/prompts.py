@@ -71,6 +71,19 @@ Include in new_terms only recurring domain-specific terms (names, subject-area c
 not ordinary words."""
 
 
+# Scaffold strings from our own prompts. If they show up as "original" text in
+# the model's output, the model translated the prompt instead of the document
+# (seen on small models during repair retries) — such a page must be rejected.
+PROMPT_ECHO_MARKERS = (
+    "Recent pages:",
+    "Glossary (term → translation):",
+    "JSON response schema:",
+    "Page text:",
+    "<document>",
+    "Split the following page text",
+)
+
+
 def build_context_block(
     first_summary: str | None,
     recent_summaries: list[str],

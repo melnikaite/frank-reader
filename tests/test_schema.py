@@ -52,3 +52,12 @@ def test_extra_fields_ignored():
         }
     )
     assert result.text_blocks == []
+
+
+def test_phrase_without_chunks_but_with_translation_gets_one_chunk():
+    block = TextBlock(
+        order=1, type="phrase", original="Art 74a (weggefallen)", translation="(отменена)"
+    )
+    assert len(block.chunks) == 1
+    assert block.chunks[0].original == "Art 74a (weggefallen)"
+    assert block.chunks[0].translation == "(отменена)"

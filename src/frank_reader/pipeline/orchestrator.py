@@ -7,6 +7,7 @@ from frank_reader.adapters import PageContent, get_adapter
 from frank_reader.config import Settings
 from frank_reader.pipeline.llm_client import LLMClient, call_structured
 from frank_reader.pipeline.prompts import (
+    PROMPT_ECHO_MARKERS,
     PROMPT_VERSION,
     build_context_block,
     system_prompt,
@@ -40,6 +41,19 @@ class EventBus:
     def emit(self, job_id: str, event: dict) -> None:
         for q in self._queues.get(job_id, set()):
             q.put_nowait(event)
+
+
+def _check_prompt_echo(page_result: PageResult) -> None:
+    """Reject output where the model translated our prompt instead of the
+    document (happens on small models, especially during repair retries).
+    One marker hit could be legitimate document text; two or more cannot."""
+    hits = sum(
+        1
+        for block in page_result.text_blocks
+        if any(marker in block.original for marker in PROMPT_ECHO_MARKERS)
+    )
+    if hits >= 2:
+        raise ValueError(f"model echoed the prompt instead of the document ({hits} scaffold lines)")
 
 
 def _exc_str(exc: Exception) -> str:
@@ -182,12 +196,14 @@ async def process_job(job_id: str, storage: Storage, settings: Settings, llm: LL
             elif page.kind == "text":
                 user_text = user_text_page(page.text or "", context)
                 page_result = await call_structured(llm, system, user_text, PageResult, on_progress=on_progress)
+                _check_prompt_echo(page_result)
                 storage.cache_put(cache_key, page_result.model_dump_json())
             else:
                 user_text = user_vision_page(context)
                 page_result = await call_structured(
                     llm, system, user_text, PageResult, image_png=page.image_png, on_progress=on_progress
                 )
+                _check_prompt_echo(page_result)
                 storage.cache_put(cache_key, page_result.model_dump_json())
         except Exception as exc:
             err = _exc_str(exc)

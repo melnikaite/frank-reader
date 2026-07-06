@@ -18,7 +18,14 @@ class TextBlock(BaseModel):
     @model_validator(mode="after")
     def _check_by_type(self):
         if self.type == "phrase" and not self.chunks:
-            raise ValueError("phrase must have chunks")
+            # Small models reliably emit chunk-less phrases with a whole-phrase
+            # translation for degenerate lines like "Art 74a (weggefallen)".
+            # Rejecting the whole page over that is worse than accepting a
+            # single chunk covering the entire phrase.
+            if self.translation:
+                self.chunks = [Chunk(original=self.original, translation=self.translation)]
+            else:
+                raise ValueError("phrase must have chunks")
         if self.type != "phrase" and not self.translation:
             raise ValueError(f"{self.type} must have translation")
         return self

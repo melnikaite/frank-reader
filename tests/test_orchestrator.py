@@ -156,3 +156,23 @@ async def test_inline_image_error_is_non_fatal(tmp_path, pdf_with_inline_images)
     record = json.loads(pages[0]["result_json"])
     assert record["status"] == "done"
     assert record["result"]["image_annotations"] == []
+
+
+def test_prompt_echo_detection():
+    from frank_reader.pipeline.orchestrator import _check_prompt_echo
+    from frank_reader.pipeline.schema import Chunk, PageResult, TextBlock
+    import pytest
+
+    def phrase(text):
+        return TextBlock(order=1, type="phrase", original=text,
+                         chunks=[Chunk(original=text, translation="x")])
+
+    echoed = PageResult(page_summary="s", detected_language="de",
+                        text_blocks=[phrase("Recent pages:"), phrase("Glossary (term → translation):")])
+    with pytest.raises(ValueError, match="echoed the prompt"):
+        _check_prompt_echo(echoed)
+
+    # a single marker hit may be legitimate document text
+    ok = PageResult(page_summary="s", detected_language="de",
+                    text_blocks=[phrase("Recent pages: see archive"), phrase("normal text")])
+    _check_prompt_echo(ok)
