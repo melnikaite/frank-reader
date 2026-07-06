@@ -43,17 +43,24 @@ class EventBus:
             q.put_nowait(event)
 
 
-def _check_prompt_echo(page_result: PageResult) -> None:
-    """Reject output where the model translated our prompt instead of the
-    document (happens on small models, especially during repair retries).
-    One marker hit could be legitimate document text; two or more cannot."""
-    hits = sum(
-        1
+def _check_prompt_echo(page_result: PageResult) -> PageResult:
+    """Handle output where the model leaked our prompt scaffolding into the
+    text (happens on small models, especially during repair retries). Two or
+    more scaffold lines mean the whole page is a prompt translation — reject
+    it. A single one is dropped silently: an isolated leak next to otherwise
+    real document content."""
+    is_echo = [
+        any(marker in block.original for marker in PROMPT_ECHO_MARKERS)
         for block in page_result.text_blocks
-        if any(marker in block.original for marker in PROMPT_ECHO_MARKERS)
-    )
+    ]
+    hits = sum(is_echo)
     if hits >= 2:
         raise ValueError(f"model echoed the prompt instead of the document ({hits} scaffold lines)")
+    if hits == 1:
+        logger.warning("Dropping a leaked prompt-scaffold block from the page output")
+        blocks = [b for b, echo in zip(page_result.text_blocks, is_echo) if not echo]
+        return page_result.model_copy(update={"text_blocks": blocks})
+    return page_result
 
 
 def _exc_str(exc: Exception) -> str:
@@ -196,14 +203,14 @@ async def process_job(job_id: str, storage: Storage, settings: Settings, llm: LL
             elif page.kind == "text":
                 user_text = user_text_page(page.text or "", context)
                 page_result = await call_structured(llm, system, user_text, PageResult, on_progress=on_progress)
-                _check_prompt_echo(page_result)
+                page_result = _check_prompt_echo(page_result)
                 storage.cache_put(cache_key, page_result.model_dump_json())
             else:
                 user_text = user_vision_page(context)
                 page_result = await call_structured(
                     llm, system, user_text, PageResult, image_png=page.image_png, on_progress=on_progress
                 )
-                _check_prompt_echo(page_result)
+                page_result = _check_prompt_echo(page_result)
                 storage.cache_put(cache_key, page_result.model_dump_json())
         except Exception as exc:
             err = _exc_str(exc)

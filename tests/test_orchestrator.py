@@ -172,7 +172,12 @@ def test_prompt_echo_detection():
     with pytest.raises(ValueError, match="echoed the prompt"):
         _check_prompt_echo(echoed)
 
-    # a single marker hit may be legitimate document text
-    ok = PageResult(page_summary="s", detected_language="de",
-                    text_blocks=[phrase("Recent pages: see archive"), phrase("normal text")])
-    _check_prompt_echo(ok)
+    # a single marker hit is dropped, the rest of the page survives
+    one = PageResult(page_summary="s", detected_language="de",
+                     text_blocks=[phrase("Recent pages: see archive"), phrase("normal text")])
+    cleaned = _check_prompt_echo(one)
+    assert [b.original for b in cleaned.text_blocks] == ["normal text"]
+
+    clean = PageResult(page_summary="s", detected_language="de",
+                       text_blocks=[phrase("normal text")])
+    assert _check_prompt_echo(clean) is clean
