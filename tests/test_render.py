@@ -133,3 +133,17 @@ def test_render_pdf_raises_pdf_not_available_on_pisa_error(monkeypatch):
         assert False, "expected PdfNotAvailable"
     except PdfNotAvailable:
         pass
+
+
+def test_hiding_translations_removes_the_glossed_line_not_just_spans():
+    blocks = [
+        {
+            "order": 1,
+            "type": "phrase",
+            "original": "Hallo Welt",
+            "chunks": [{"original": "Hallo Welt", "translation": "привет мир"}],
+        }
+    ]
+    doc = {"source_name": "t", "pages": [_page_with_blocks(blocks)]}
+    html = render_html(doc, job_dir=None)
+    assert "body.translations-hidden .phrase .glossed { display: none; }" in html

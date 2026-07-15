@@ -26,6 +26,11 @@ _STYLE = """
   .inline-image { max-width: 100%; display: block; margin: 1rem 0 0.4rem; }
   .img-labels { color: #7a7a7a; font-size: 0.9em; margin: 0 0 1.2rem 1.2rem; }
   body.translations-hidden .tr { display: none; }
+  /* A phrase's glossed line, with its .tr spans hidden, is just the original
+     text again - identical to the plain line below it. Hide the whole line
+     there, or the phrase visibly repeats itself. Headings/captions/list
+     items have no such duplicate line, so hiding their .tr span is enough. */
+  body.translations-hidden .phrase .glossed { display: none; }
   #toggle-btn {
     position: fixed; top: 1rem; right: 1rem; z-index: 10;
     font-family: sans-serif; font-size: 0.85rem; padding: 0.4rem 0.8rem;
